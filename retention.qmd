@@ -1,0 +1,127 @@
+---
+title: IPEDS Benchmarks
+format: html
+params:
+    my_college: 218070
+---
+
+## Show the IPEDS breakdown by College and Year
+
+This **is** my *IPEDS* report for `r params$my_college`.
+
+
+```{r}
+#| echo: false
+#| include: true
+#| warning: false
+
+library(tidyverse)
+library(knitr) # for prettier tables
+
+my_college <- params$my_college # 218070
+
+ret <- read_csv("data/efd_compiled.csv") %>% 
+    select(UNITID, 
+           Name = NAME, 
+           Year = ACAD_YEAR, 
+           Retention = `Full-time retention rate, 2020`) %>% 
+    mutate(Inst = case_when( UNITID == my_college ~ "Us", 
+                             TRUE                 ~ "Peer"))
+
+# save it to disk
+ret %>% 
+    select(Name, Year, Retention) %>% 
+    spread(Name, Retention) %>% 
+    write_csv("output/Retention.csv")
+
+# make a table
+ret %>% 
+    select(Name, Year, Retention) %>% 
+    spread(Name, Retention) %>% 
+    kable()
+
+```
+
+# Make a smooth graph comparing us to average peer
+
+```{r}
+#| echo: false
+#| include: true
+#| warning: false
+
+ret %>% 
+    ggplot(aes(x = Year, y = Retention, linetype = Inst)) +
+    geom_smooth(se = FALSE, color = "black") +
+    theme_bw()
+```
+
+# Make an average graph comparing us to average peer
+
+```{r}
+#| echo: false
+#| include: true
+#| warning: false
+
+ret %>% 
+    group_by(Inst, Year) %>% 
+    summarize(Retention = mean(Retention)) %>% 
+    ggplot(aes(x = Year, y = Retention, linetype = Inst)) +
+    geom_line(color = "black") +
+    theme_bw()
+```
+
+
+
+# SAT and retention
+
+Q: if we take standardized test scores into account, how does retention look?
+
+```{r}
+#| echo: false
+#| include: true
+#| warning: false
+
+adm <- read_csv("data/adm_compiled.csv") %>% 
+    select(UNITID, 
+           Name = NAME, 
+           Year = ACAD_YEAR, 
+           SATM25 = `SAT Math 25th percentile score`,
+           ACTM25 = `ACT Math 25th percentile score`) %>% 
+    left_join(ret)
+
+# scatterplot of SATM25 vs retention
+adm %>% 
+    group_by(Inst, Year) %>% 
+    summarize(Retention = mean(Retention), SATM25 = mean(SATM25, na.rm = TRUE)) %>% 
+    ggplot(aes(label = Year, 
+               x = SATM25, 
+               y = Retention, 
+               color = Inst)) +
+    geom_path() +
+    geom_text() +
+    theme_bw()
+```
+
+
+# ACTM25 and retention
+
+Now with ACTM25.
+
+```{r}
+#| echo: false
+#| include: true
+#| warning: false
+
+adm %>% 
+    group_by(Inst, Year) %>% 
+    summarize(Retention = mean(Retention), ACTM25 = mean(ACTM25, na.rm = TRUE)) %>% 
+    ggplot(aes(label = Year, 
+               x = ACTM25, 
+               y = Retention, 
+               color = Inst)) +
+    geom_path() +
+    geom_text() +
+    theme_bw()
+```
+
+

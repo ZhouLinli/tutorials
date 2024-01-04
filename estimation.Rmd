@@ -1,0 +1,220 @@
+---
+title: "Predicting Retention with Error"
+author: "David Eubanks"
+date: "3/13/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(broom)    # for regeression output as dataframe
+library(knitr)    # for nice tables
+library(rstanarm) # easy interface for Bayesian regression
+library(mvtnorm)  # for multivariate normal randoms
+
+set.seed(195238)  # to get the same 'random' numbers each time
+
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE,
+                      message = FALSE,
+                      fig.width = 3,
+                      fig.height = 2.5)
+```
+
+# Binary Outcomes
+
+To understand student attendence patterns, we usually simply those to one of two states: an individual student either did or did not attend during a given term. This is an approximation, because other valid states fuzz those lines: students who are part-time or on a leave. But a one (attended) or zero (didn't) is a good enough approximation for most purposes. 
+
+In predicting any output variable, we have a choice of what to focus on: the average or median or some other statistic. Linear regression predicts averages, for example. Since the average of a binary variable is the same as the proportion of ones, we can start with linear regression.
+
+Imagine a first year retention rate of 85%, meaning that we have a set of data that in simplest form is a vector like 1,1,1,1,0,1,..., where on average 85% of that list is ones and 15% is zeros. But for any particular sample, the actual ratio probably won't be exactly 85%. We might have a particularly lucky or unlucky sample, but we start from the premise that each student has a probability of enrollment, which we want to estimate. The actual probability will never be known except in simulations. This makes simulating data useful, because we can test our ideas about prediction and error. 
+
+If we use linear regression on binary data, using only a constant term, the math looks like 
+
+$$ y_i = \beta_0+ \varepsilon_i $$
+where $y_i$ is the binary outcome (like retained / not retained) for the $i$th row of data (usually a student). We model all the students with the same prediction, an average retention rate $\beta_0$, where beta is a customary name for regression coefficients. The $\varepislon_i$ at the end is the model's "residual", or left-over part after applying the rest of the model. Actual outcomes are either zero or one, so if the constant $\beta_0 = .85$, then the residual will be -.15 for students who were enrolled and .85 for students who did not. 
+
+Linear regression commonly works by minimizing the sum of squares of the residuals. It's not obvious that the beta coefficient will turn out to be the average retention rate, but we can see that with a bit of calculus. We want to minimize $\sum{\varepsilon_i^2} = \sum{(y_i - \beta_0)^2}$, where beta is the variable, so we differentiate with respect to beta and set to zero.
+
+$$ 
+\begin{align}
+\frac{d}{d\beta_0} \sum{(y_i - \beta_0)^2} &= -2 \sum{(y_i - \beta_0)} \\
+&= 2N\beta_0 - 2 \sum{y_i} \\
+&= 0
+\end{align}
+$$
+where $N$ is the number of data points.
+
+Solving the equation gives $\beta_0 = \frac{\sum{y_i}}{N}$, which is the average of the $y_i$s. That average rate $\beta_0$ is for the *sample* of students in the data set, which as noted above, might be unrepresentative of the general population. This is more likely to be true for small sample sizes. In other words, even if the true retention rate for the whole population is 85%, we are likely to see higher or lower actual rates, with more variation as the sample size becomes smaller. This variation from the true rate is called *bias*. There usually is no way to fully account for bias in real data, but being aware of it can help us be appropriately cautious about making predictions. 
+
+To illustrate estimation bias, we'll simulate 100 students who all have retention probabilities of .85, then calculate the regression coefficient.  
+
+```{r linear_regression}
+# simulate 100 students with 85% retention
+N <- 100
+true_p <- .85
+true_SE <- sqrt(true_p*(1-true_p)/N)
+
+df <- data.frame(
+              StudentID = 1:N,
+              Enroll = sample(0:1, size = N, replace = TRUE, prob = c(1-true_p, true_p)))
+
+# for comparison, direct calculation
+p <- mean(df$Enroll)
+SE <- sqrt(p*(1-p)/N) 
+
+# linear regression to find the average
+lm(Enroll ~ 1, data = df) %>% # model Enroll with a single constant (avg)
+  broom::tidy() %>% 
+  kable(digits = 2)
+
+```
+
+The intercept is the $\beta_0$ from the model above, estimated here at .80, which is a bias of -.05, since the true rate is .85. We can think of this is a kind of 'bad luck' in drawing samples--this particular draw had a lower-than expected retention rate. But we ordinarily wouldn't know that this is the case just looking at the one sample. 
+
+Generally, if we just use regression estimates as produced by a model, we are likely to either underestimate or overestimate future enrollment. As noted above, this is called model *bias*. See [this article](https://en.wikipedia.org/wiki/Bias%E2%80%93variance_tradeoff) for more. In this simple model, we don't really need linear regression, since we can directly calculate the rate as `r p %>% round(2)` and the standard error of that estimate using SE = $\sqrt{p(1-p)/N}$ = `r SE %>% round(2)`. But once we start incorporating explanatory variables like GPA, it's a regression problem, which produces conditional averages (e.g. what's the retention rate for GPA = 3.0 students?). 
+
+The regression model (or direct calculation) gives us a standard error for the estimated average, which we can use to create a range of likely true rates. But we have to be careful when translating that range into enrollment estimates.
+
+```{r p_sim, fig.cap="True variation in enrollment (blue) and estimated variation (black)."}
+# draw normal densities corresponding to actual and empirical rates
+  ggplot() +
+  geom_function(fun = dnorm, args = list(mean = p*N, sd = SE*N), color = "red") +
+  geom_function(fun = dnorm, args = list(mean = true_p*N, sd = true_SE*N), color = "blue") +
+  theme_bw() +
+  xlim(70,100) +
+  xlab("Actual (blue) vs predicted") +
+  ylab("") # don't need a y label
+
+```
+
+The blue density graph show the "natural variation" of the enrollment total with N = 100 students and 85% true retention. But we normally don't know that true rate, and if we use the estimated rate $\beta_0$ along with its standard error, we can create misleading estimates for future populations. The red line shows the estimated retention rate and standard error multiplied by the number of students as a prediction. It has a negative bias, underestimating enrollment. 
+
+[TBD -- there are two steps--1. estimate p with p_hat, 2. estimate range of enrollment from proposed p distribution using something like convolution]
+
+To account for the error in the estimation process for the true proportion of enrollment, we have some choices. A general purpose solution is used below, using Bayesian estimation with a Markov Chain Monte Carlo method (MCMC). The value of this approach will be evident with more complex models. See the documentation for the [*rstanarm*](https://mc-stan.org/users/documentation/case-studies/tutorial_rstanarm.html#accessing-the-simulations-and-summarizing-results) package for details. For a whole book on the topic, I recommend *Statistical Rethinking* by Richard McElreath. 
+
+```{r bayesian_fit}
+
+bayes_fit <- rstanarm::stan_glm(Enroll ~ 1, data = df, family = gaussian(), refresh = 0) 
+# refresh = 0 keeps progress messages from cluttering up the report. Set to e.g. 200 to see progress. 
+
+p_sims <- as.matrix(bayes_fit, pars = "(Intercept)")[,1] # get the intercept estimates
+
+# how  many trials?
+N_trials <- 1000 
+
+# simulate results with proportion p enrolled
+# create the dataframe to hold the results
+enroll_sim_bayes <- data.frame(Trial = 1:N_trials,
+                               EnrollTotal = NA,
+                               p_hat       = sample(p_sims, size = N_trials, replace = TRUE)) # the proportion varies according to the simulated values
+
+# loop to run the simulation and save results
+# loop to run the simulation and save results
+for(i in 1:N_trials){
+  p <- enroll_sim_bayes$p_hat[i] 
+  enroll_sim_bayes$EnrollTotal[i] = sum(sample(0:1, size = N, replace = TRUE, prob = c(1-p, p)))
+}
+
+# plot the histogram
+enroll_sim_bayes %>% 
+  ggplot(aes(x = EnrollTotal)) +
+  geom_histogram(color = "white", bins = 10) + # white outlines on boxes
+  geom_vline(xintercept = p*N, color = "red") + # reference line at estimated p
+  theme_bw() +
+  xlab("Simulated total enrollment") +
+  ylab("") # don't need a y label
+
+```
+
+We can compare the two types of estimates more easily by plotting smoothed distributions together instead of histograms.
+
+```{r fig_compare_enrollment_predictions, fig.width=4.5}
+
+# put the data together in an inelegant way
+enroll_sim %>% 
+  select(EnrollTotal) %>% 
+  mutate(Type = "Rate only") %>% # add a type for comparison
+  full_join(enroll_sim_bayes %>% 
+               select(EnrollTotal) %>% 
+            mutate(Type = "Full uncertainty")
+  ) %>% 
+ggplot(aes(x = EnrollTotal, group = Type, fill = Type)) +
+  geom_density(alpha = .2) + #make the fill transparent
+  theme_bw() +
+  xlab("Simulated total enrollment") +
+  geom_vline(xintercept = p*N, color = "red") + # reference line
+  ylab("") # don't need a y label
+
+```
+
+To see the usefulness of the MCMC approach, let's create a more complicated retention model. Suppose that each student comes with a high school GPA (HSGPA) and SAT score, and that the probability of enrollment for student $i$ on our given term is $\text{Pr}[e_i] = .75 + .10 (HSGPA - 3.0) + .0001 (SAT - 1200)$ which can be reduced to $.33 + .10 HSGPA + .0001 SAT$. We can expect grade averages and standardized test scores to be correlated. For this example, we'll assume that these are normally distributed with a .70 correlation.
+
+```{r multivar_sim}
+# generate data for HSGPA, SAT, and probability p
+df <- mvtnorm::rmvnorm(N, 
+        mean = c(3.0, 1100), 
+        sigma = matrix(c(.25, 40, 40, 10000), nrow = 2)) %>% 
+      as.data.frame() %>% 
+      rename(HSGPA = V1, SAT = V2) %>% 
+      mutate(HSGPA = pmax(pmin(HSGPA,4),0),    # limit to reasonable
+             SAT   = pmax(pmin(SAT,1600),800), # ranges
+             p     = .33 + .10*HSGPA + .0001*SAT, 
+             p     = pmax(pmin(p,1),0),
+             Enroll = (runif(N) <= p) + 0)
+
+# linear regression to find the average
+lm(Enroll ~ HSGPA + SAT, data = df) %>% 
+  broom::tidy() %>% 
+  kable(digits = 5)
+
+```
+
+The correlation between HSGPA and SAT is `r cor(df$HSGPA, df$SAT) %>% round(2)`, as defined by the covariance matrix in the simulation. The for small N (like 100), the coefficients are pretty uncertain. Let's compare a simulation of predicted values to the ones the actual model would predict.
+
+```{r bayesian_prediction}
+
+bayes_fit <- rstanarm::stan_glm(Enroll ~ HSGPA + SAT, data = df, family = gaussian(), refresh = 0) 
+
+# create the matrix of simulated coefficients for the inputs (x)
+x_coefs <- as.matrix(bayes_fit, pars = c("(Intercept)","HSGPA","SAT"))        
+
+# input vars, with 1 added for the intercept to multiply by
+x <- df %>% 
+  mutate(Intercept = 1) %>% 
+  select(Intercept, HSGPA, SAT) %>% 
+  as.matrix()
+
+# multiply these to get a matrix with each row being one
+# MCMC simulation and each column is one simulated student
+# The entries are probabilities of enrollment. 
+probs   <- x_coefs %*% t(x) # %*% is matrix multiply
+                            # t(x) is transpose of x
+
+# random 0-1 in same amount
+rand01 <- matrix(runif(nrow(probs)*ncol(probs)),
+                    nrow = nrow(probs))
+
+# induced enrollment sums from the regression models
+enroll_sums <- rowSums(rand01 < probs)
+
+# distributions given the same students
+N_trials <- 1000
+enroll_sim <- rep(NA, N_trials)
+for(i in 1:N_trials){
+  enroll_sim[i] = sum(runif(nrow(df)) < df$p)
+}
+
+data.frame(EnrollTotal = c(enroll_sums, enroll_sim), Type = c(rep("Model", length(enroll_sums)),
+                                                                                rep("Data", length(enroll_sim)))) %>% 
+ggplot(aes(x = EnrollTotal, group = Type, fill = Type)) +
+  geom_density(alpha = .2) + #make the fill transparent
+  theme_bw() +
+  xlab("Simulated total enrollment") +
+  geom_vline(xintercept = p*N, color = "red") + # reference line
+  ylab("") # don't need a y label
+
+```
+
+

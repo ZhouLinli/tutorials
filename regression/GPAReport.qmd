@@ -1,0 +1,288 @@
+---
+title: "Greek Orgs and Grades"
+author: "Generic University Institutional Research"
+format: pdf
+editor: visual
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(knitr) # for nice table output
+library(broom) # for cleaning up regression results
+library(rstanarm) # for Bayesian regression
+library(broom.mixed) # for cleaning up regression tables from rstan
+library(bayesplot) # for plotting Bayes results
+
+# **Parameters**
+refresh <- FALSE # rerun the long Bayes computation?
+
+#' **Scenario**
+#' A senior administrator asks for GPAs by Greek organization.
+#' 
+#' Read in the data
+grades <- read_csv("data/StudOrgs.csv")
+#' Y1GPA = first year cumulative GPA
+#' Y12GPA = cumulative GPA for first and second years combined, or
+#' blank if the student didn't complete the second year.
+#' Org = Greek organization or "None"
+```
+
+## Overview
+
+Most students at GU join a fraternity or sorority in the spring term of their first year. Conditions for matching differ by organization, and may include a minimum grade average. Upon request, the IR office calculated GPAs for combined first and second year grades disaggregated by organization (or None). This analysis revealed that students in XXX had significantly lower grades than other students.
+
+## Grade Averages
+
+We can calculate grade averages with error estimates three ways: (1) using the usual formula for averages and the formula for standard error of the estimate $SE = \sigma_x / \sqrt{N}$, the standard deviation of the sample divided by the square root of the number of samples, (2) using least squares regression, and (3) using maximum likelihood. The results of those are shown in Figure 1.
+
+```{r compare_avg, fig.width=6, fig.height=3, fig.cap = "Grade averages by organisation for first two years in college."}
+#' *Usual average computation*
+avg <- grades %>% 
+  group_by(term = str_c("Org",Org)) %>% 
+  summarize(Average = mean(Y12GPA, na.rm = TRUE), 
+            SE = sd(Y12GPA, na.rm = TRUE) / sqrt(sum(!is.na(Y12GPA))),
+            Type = "Average") # average after removing blanks
+
+#' *Linear regression using least squares*
+ls_coefs <- lm(Y12GPA ~ 0 + Org, data = grades) %>% 
+  broom::tidy() %>% 
+  select(term, Average = estimate, SE = std.error) %>% 
+  mutate(Type = "Least Squares")
+
+#' *Max likelihood, using Bayes*
+b_coefs <- stan_glm(Y12GPA ~ 0 + Org, 
+                    data = grades, 
+                    family = gaussian(),
+                     refresh = 0) %>% # suppress output to console
+  broom.mixed::tidy() %>% 
+  select(term, Average = estimate, SE = std.error) %>% 
+  mutate(Type = "Max. Likelihood")
+
+averages <- avg %>% 
+  add_row(ls_coefs) %>% 
+  add_row(b_coefs) %>% 
+  mutate(Org = reorder(term, Average))
+
+#' Plot the results
+averages %>% 
+  ggplot(aes(x = Average, # map data elements to graph features
+             y = Org, 
+             xmin = Average - 2*SE, 
+             xmax = Average + 2*SE,
+             group = Type,
+             color = Type)) +
+  geom_vline(xintercept = 3.0, linetype = "dashed") +
+  geom_errorbar(width = 0, position = position_dodge(width = .5)) + 
+  geom_point(position = position_dodge(width = .5)) +
+  theme_bw() +
+  xlab("Cum. GPA first two years")
+  
+```
+
+The XXX organization is the only one with a GPA lower than B (3.0). The error bars in Figure 1 are two standard errors, which give a reasonable range for the average assuming that the student selection process was repeated multiple times with similar students.
+
+An institutional research report might stop here and send off a numerical table of averages to the originator of the request.
+
+```{r GPAavgs}
+avg %>% 
+  select(Org = term, GPA = Average) %>% 
+  arrange(GPA) %>% # sort descending
+  kable(digits = 2, caption = "Table 1. Cum. GPA end of second year.")
+```
+
+# Pitfalls in Analysis
+
+It's easy to reach the wrong conclusion from a data summary. Here, let's focus on the question "is the administration right in sanctioning XXX for low grades?", implying that someone infers that membership in XXX *causes* low grades.
+
+Most decisions are based on assumptions about causality, and that's especially tricky when we only have observational (i.e. not experimental) data. For a contemporary review of methods and philosophies see [this](https://muse.jhu.edu/article/867090). Also see [*The Book of Why*](https://www.amazon.com/Book-Why-Science-Cause-Effect/dp/046509760X).
+
+## Pitfall 1: Failure to analyze estimation error
+
+One of the most common is to overinterpret small samples of data. We can hope to safeguard against that by using error estimates on the statistics we publish, as with the figure above. Small error bounds do not mean that we should necessarily trust the findings, but large error bounds mean we *should* distrust them.
+
+## Pitfall 2: Failure to generalize
+
+If we interpret a Greek organization as a treatment having an *effect* on students, we are assuming a model like the one in the flowchart.
+
+```{mermaid}
+    flowchart LR
+      A[Student] --> B(Organization)
+      B --> C{GPA}
+```
+
+Being explicit about the assumption of "the organization affects GPA" can cause us to reconsider the analysis, to ask "what causes GPA generally?". Since we're speaking about cumulative first and second year grades, they are certainly affected by (predicted by) first year cumulative grades.
+
+General research pays off because it's generally useful. Knowing what predicts grades means you understand retention and graduation better, and it has applications within programs.
+
+## Pitfall 3: Backwards causality
+
+Because we don't often have experimental conditions in higher education, we are forced to make educated guesses about cause and effect. One hazard is that a statistical association between A and B is interpreted as A causing B merely because it's psychologically more appealing. If the XXX organization has a bad reputation on campus, then "XXX causes low grades" resonates more than "low grades cause XXX." The second version sounds preposterous until we remember how students are sorted into these organizations.
+
+## Pitfall 4: Selection effects
+
+In this grades study, students aren't randomly assigned a Greek organization. There's a vetting process, which may include GPA as a criterion. This is diagrammed in the next flowchart, where the dotted line indicates a selection effect.
+
+```{mermaid}
+    flowchart LR
+      A[Student] --> C{GPA}
+      C -.-> B(Organization)
+```
+
+These three pitfalls suggest a new line of inquiry, to separate first year and second year grades to understand selection effects, and to include first year grades as a predictor for second year grades. This results in a more complex idea of what's going on, diagrammed below.
+
+```{mermaid}
+    flowchart LR
+      A[Student] --> C{Y1GPA}
+      C{Y1GPA} -.-> B(Organization)
+      B --> D{Y2GPA}
+      C --> D{Y2GPA}
+```
+
+# GPA Reliability
+
+Assuming that a Greek organization can be a primary driver of grades probably isn't optimal. How much do first year grades affect second year grades? There's a bit of an inconvenience because we don't *have* second year grade averages, we have cumulative first and second years together in Y12GPA. We could go back to the database, but we can approximate pretty well using
+
+$$
+\begin{aligned}
+GPA_{12} &= (GPA_1 + GPA_2)/2 \\
+2GPA_{12} &= GPA_1 + GPA_2 \\
+2GPA_{12} - GPA_1 &= GPA_2
+\end{aligned}
+$$
+
+```{r, gpa_model, fig.width= 4, fig.height= 3, fig.cap = "First and second year GPAs by organization, with means for both GPAs marked and annotated with 10%-90% quantile range for first year GPA ."}
+# add the second year GPA approximation
+grades <- grades %>% 
+          mutate(Y2GPA = pmin(2*Y12GPA - Y1GPA, 4))
+
+r2 <- lm(Y2GPA ~ Y1GPA, data = grades) %>% 
+  broom::glance() %>%
+  pull(adj.r.squared)
+
+means <- grades %>% 
+   mutate(Org = if_else(Org == "XXX", "XXX", "Other")) %>% 
+   group_by(Org) %>% 
+   summarize(Mean = mean(Y1GPA),
+             Upper90 = quantile(Y1GPA, .90),
+             Lower90 = quantile(Y1GPA, .10),
+             y = mean(Y2GPA, na.rm = TRUE))
+
+grades %>% 
+  mutate(Org = if_else(Org == "XXX", "XXX", "Other")) %>% 
+  na.omit() %>% 
+  ggplot(aes(x = Y1GPA, y = Y2GPA,  group = Org, color = Org, linetype = Org)) +
+  geom_point(alpha = .2) +
+  geom_smooth(se = FALSE, color = "black") +
+  geom_point(aes(x = Mean, y = y ), size = 2, color = "black", data = means) +
+  geom_errorbar(aes(x = Mean, xmin = Lower90, xmax = Upper90, y = y ), 
+                width = 0, color = "black", data = means) +
+  theme_bw() +
+  ggtitle(str_c("R^2 = ",round(r2,2))) 
+ # geom_abline(slope = 1, intercept = 0, linetype = "dashed")
+
+```
+
+The partial ability to predict second year grade averages from first year statistics means that GPA has some statistical reliability (Eubanks, et al, 2020). We should not be considering the potential effect of organizational membership on GPA without taking this fact into account.
+
+Curiously, the trends in Figure 2 suggest that XXX is *above average* in second year grades when first year grades are considered. That's weird. How do we explain the original low GPAs for XXX?
+
+```{r GPAdensity, fig.width=4, fig.height=3, fig.cap= "Distribution of first year grade averages by organization."}
+
+grades %>% 
+  mutate(Org = if_else(Org == "XXX", "XXX", "Other")) %>% 
+  ggplot(aes(x = Y1GPA, color = Org, fill = Org, group = Org)) +
+  geom_density(alpha = .2) +
+  theme_bw()
+
+```
+
+From Figures 2 and 3 taken together, it appears that XXX recruits from lower-GPA students, but then raises their averages for year two.
+
+# Grades and Organizations
+
+We can estimate the average hypothetical effect of XXX membership on second year grades by including first year grades in a model like
+
+$$
+GPA_2 = \beta_0 + \beta_1 GPA_1 + \beta_2 Org + \varepsilon
+$$ where the betas are coefficients to be estimated by regression methods, and the last term is the error residual comprising the difference between the true value $GPA_2$ and estimated value $\beta_0 + \beta_1 GPA_1 + \beta_2 Org$ for each student.
+
+```{r gpa_org_model, fig.width=4, fig.height=3, fig.cap= "Posterior distribution of XXX effect on grades."}
+
+# Bayesian model assuming normally distributed errors
+gpa_org_model <- stan_glm(Y2GPA ~ Y1GPA + Org, 
+                          data = grades %>% 
+                            mutate(Org = if_else(Org == "XXX", "XXX", "Other")) %>%                             na.omit(), 
+                          family = "gaussian",
+                          refresh = 0 
+                          )
+
+# density of estimates for the XXX coefficient 
+# c.f. http://mc-stan.org/bayesplot/
+bayesplot::mcmc_areas(as.matrix(gpa_org_model),
+                      pars = c("OrgXXX"),
+                      prob = .95)
+```
+
+The advantage of using a Bayesian model is that the simulated probabilities can be taken at face value as estimates: the positive effect of OrgXXX on second year grades is probably close to .48 grade points (half a letter grade). The initial conclusion from grade averages, that XXX was significantly decreasing grades, is challenged by an alternative story. It looks like the organization matches with lower-GPA students, and then helps them raise their grades. However, we have one more thing to check.
+
+# Selection Effects part Two
+
+Some of the second year GPAs are missing, which we can assume means that the student did not complete the second year. It is likely that there is a connection between first year GPA and the chance of dropping out. Let's see. The usual way to do this is with a logistic regression that models
+
+$$
+\log \left( \frac{\text{Pr}[\text{Retain}]}{\text{Pr}[\text{Attrit}]}  \right) = \beta_0 + \beta_1 GPA_1 + \beta_2 \text{Org} + \beta_3OrgGPA_1+ \varepsilon
+$$
+
+This is a generalized linear model, as can be seen from the right side (a sum of simple terms). The left side is the "generalized" part, since there's a complicated-looking function instead of a simple outcome variable. This model has an average offset ($\beta_0$), a coefficient for first year grades, one for the organization indicator (which is zero or one), and an interaction term that modifies the GPA coefficient just for XXX members.
+
+```{r, retain_model, fig.cap = "Posterior distributions of retention model coefficients."}
+# this is a slow computation, so save the results to prevent recomputing each time we 
+# build the report. Set refresh <- TRUE at the top of the file to rerun
+if(refresh == TRUE) {
+  retain_glm <- stan_glm(Retain ~ Y1GPA * Org, 
+                  family = "binomial",
+                  refresh = 0,
+                  data = grades %>% 
+                    mutate(Retain = !is.na(Y2GPA),
+                           Org = if_else(Org == "XXX", "XXX", "Other"),
+                           Y1GPA = scale(Y1GPA)))
+  write_rds(retain_glm, "data/retain_glm.rds")
+} else {
+  retain_glm <- read_rds("data/retain_glm.rds")
+}
+
+bayesplot::mcmc_areas(as.matrix(retain_glm),
+                      pars = c("Y1GPA","OrgXXX","Y1GPA:OrgXXX"),
+                      prob = .95)
+```
+
+The modeled estimates in Figure 5 for predicting second year retention are all convincingly non-zero. First year GPA is a positive predictor, but XXX membership is negative in two ways: there's a retention hit just for being a member, and the risk *increases* with higher GPAs.
+
+The model indicates that there's probably a retention problem with XXX.
+
+# Conclusions
+
+The initial request for information about grade averages was too simple a model to answer causal questions about the effect of Greek organizations on grades. Analysis of grades and retention led us to a more complicated understanding of what's going on. It may be that XXX members see higher grades than they otherwise would have, but that's only for the students who do not drop out. And there seems to be a significant retention issue with XXX. Conceptually, our model now looks like this.
+
+```{mermaid}
+    flowchart LR
+      A[Student] --> C{Y1GPA}
+      C{Y1GPA} -.-> B(Organization)
+      B --> D{Retain}
+      C --> D
+      D -.-> E{Y2GPA}
+      B --> E
+      C --> E
+```
+
+There are three effects on the second year grade average: first year GPA, any effect from joining a Greek organization, and the effect of attrition removing students from the pool of grades to be averaged. Other factors could be included as well, such as non-academic predictors of retention, such as socioeconomics.
+
+Part of the benefit of doing this kind of analysis, even when the initial request seems so simple, is that it builds general models that we can use for other purposes. For example, instead of asking about Greek organizations, we could ask about student majors.
+
+# References
+
+Eubanks, D., Good, A. J., Schramm-Possinger, M. (2020) Course grade reliability, Journal of Institutional Effectiveness and Assessment, 10(1-2).
